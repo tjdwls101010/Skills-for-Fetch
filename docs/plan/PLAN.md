@@ -4,7 +4,7 @@
 >
 > **Target OS: macOS (arm64) only for v1.** Linux/Windows are explicitly out of scope; do not half-build portability. Keep OS-specific paths in one place so a later port is a localized change (§10, G-os). Tier-2 login (`wf login`) assumes a GUI desktop — a headless-server install is not a supported scenario.
 >
-> **This plan lives in `docs/web-fetch/` (with `planning-evidence/`), NOT in the skill folder.** The implementer creates `.claude/skills/web-fetch/` fresh so the skill folder contains only the shipped skill. Paths like `planning-evidence/…` in this file are relative to this doc's folder.
+> **This plan lives in `docs/plan/` (with `planning-evidence/`), NOT in the skill folder.** The implementer creates `.claude/skills/web-fetch/` fresh so the skill folder contains only the shipped skill. Paths like `planning-evidence/…` in this file are relative to this doc's folder.
 >
 > **Distribution goal:** other people install this on their own Mac via `wf setup`, which must bootstrap its own prerequisites (§10, G-prereq) — do not assume the author's already-provisioned toolchain.
 
@@ -87,7 +87,7 @@ The implementer BUILDS this (skill folder holds only the shipped skill):
 
 Planning artifacts (this doc + recon) live SEPARATELY, already committed, not part of the skill:
 ```
-docs/web-fetch/
+docs/plan/
 ├── PLAN.md                     # this file
 └── planning-evidence/
     ├── poc_userdatadir.py      # PROVEN capture POC
