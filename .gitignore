@@ -1,0 +1,13 @@
+.tmp/
+.omo/
+.codegraph
+.codegraph/
+__pycache__/
+*.pyc
+.ruff_cache/
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+
+.claude/skills/agent-browser/
+.claude/skills/skill-creator/
