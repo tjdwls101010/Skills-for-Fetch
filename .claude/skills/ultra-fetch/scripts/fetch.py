@@ -119,6 +119,17 @@ def main(argv: list[str] | None = None) -> int:
             result["captured_count"] = len(attempt.captured)
             if saved_path:
                 result["captured_path"] = str(saved_path.with_name(f"{saved_path.stem}.captured.json"))
+        if attempt.soft_thin:
+            # Nothing blocked this fetch (no challenge/login-wall marker) — the
+            # content is just short. Real short-form pages (a single tweet, a
+            # one-line blurb) legitimately fail the usual length bar; surfacing this
+            # as a warning rather than silently discarding real content, or silently
+            # staying quiet about why it's this short, splits the difference.
+            result["warning"] = (
+                f"content is short ({len(attempt.markdown)} chars) but not blocked by any known marker — "
+                "likely genuinely brief (e.g. a single post/tweet), but could also be an anti-bot wall this "
+                "skill doesn't recognize yet; read the saved file yourself to judge which."
+            )
     except Exception as exc:
         print(f"uf fetch: {exc}", file=sys.stderr)
         return 1

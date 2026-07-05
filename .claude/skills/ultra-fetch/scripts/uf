@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # ultra-fetch launcher. Not assumed to be on PATH — invoke by skill-relative path,
 # e.g. "$SKILL/scripts/uf" fetch <url>. Resolves venv pythons from
-# ~/.ultra-fetch/config.json (written by `uf setup`) and execs into them, so `uf`
+# $ULTRA_FETCH_HOME/config.json (written by `uf setup`) and execs into them, so `uf`
 # itself never needs the heavy libraries installed — only a bootstrap python3.
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="$HOME/.ultra-fetch/config.json"
+# Must match setup.py/engine/session.py's own ULTRA_FETCH_HOME default exactly — a
+# fresh-install test once ran `ULTRA_FETCH_HOME=/tmp/x uf setup` successfully, then
+# `uf fetch` silently used the real ~/.ultra-fetch instead, because this launcher had
+# hardcoded the path while setup.py/session.py already respected the env var.
+ULTRA_FETCH_HOME="${ULTRA_FETCH_HOME:-$HOME/.ultra-fetch}"
+CONFIG="$ULTRA_FETCH_HOME/config.json"
 SCHEMA_VERSION=1
 
 usage() {

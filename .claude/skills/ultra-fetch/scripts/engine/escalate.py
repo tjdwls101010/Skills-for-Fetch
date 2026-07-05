@@ -16,6 +16,9 @@ from .markdown import html_to_markdown
 
 # Starting defaults — tune here, not scattered across callers.
 MIN_CONTENT_CHARS = 500
+# A soft-thin pass (see _classify) still needs SOME coherent text, not near-nothing —
+# this is a sanity floor, not a quality bar; MIN_CONTENT_CHARS is the quality bar.
+MIN_SOFT_PASS_CHARS = 20
 
 CHALLENGE_MARKERS = (
     "just a moment",
@@ -40,32 +43,20 @@ class FetchAttempt:
     html: str
     markdown: str | None
     captured: list[dict] = field(default_factory=list)
+    # Set True when this attempt was accepted only via the thin-content soft-pass
+    # (see _classify/is_soft_thin_pass) rather than a clean validate() pass.
+    soft_thin: bool = False
 
 
 class EscalationExhausted(RuntimeError):
-    """Every rung the ladder was allowed to try failed validation."""
+    """Every rung the ladder was allowed to try failed validation, including the
+    thin-content soft-pass (see _classify) — so this is a genuine block/empty-page
+    failure, not just short real content."""
 
     def __init__(self, attempts: list[FetchAttempt], *, query: str | None = None, require_capture: bool = False):
         self.attempts = attempts
         reasons = "; ".join(f"{a.rung}: {_why_failed(a, query=query, require_capture=require_capture)}" for a in attempts)
         super().__init__(f"all rungs failed validation ({reasons})")
-
-
-def _why_failed(attempt: FetchAttempt, *, query: str | None = None, require_capture: bool = False) -> str:
-    if attempt.markdown is None:
-        return "no extractable content"
-    lowered = attempt.html.lower()
-    if any(marker in lowered for marker in CHALLENGE_MARKERS):
-        return "anti-bot challenge marker present"
-    if any(marker in lowered for marker in LOGIN_WALL_MARKERS) or "/login" in attempt.final_url.lower():
-        return "login-wall marker present (profile may have expired — see G-expiry)"
-    if len(attempt.markdown) < MIN_CONTENT_CHARS:
-        return f"thin content ({len(attempt.markdown)} chars)"
-    if require_capture and not attempt.captured:
-        return "--capture-xhr matched zero responses"
-    if query and not _query_terms_present(attempt.markdown, query):
-        return f"none of the query terms ({query!r}) found in extracted text"
-    return "validation failed"
 
 
 def _query_terms_present(markdown: str, query: str) -> bool:
@@ -83,27 +74,65 @@ def _query_terms_present(markdown: str, query: str) -> bool:
     return any(word in lowered for word in words)
 
 
+def _classify(attempt: FetchAttempt, *, query: str | None = None, require_capture: bool = False) -> tuple[bool, bool]:
+    """Returns (blocked, thin). `blocked` covers every higher-confidence rejection
+    reason — an anti-bot challenge marker, a login-wall marker, a `--capture-xhr`
+    session that captured nothing, a page that never mentions the query, or no
+    extractable content at all. `thin` is purely "shorter than MIN_CONTENT_CHARS",
+    kept separate from `blocked` because short is not the same claim as blocked: a
+    single tweet or a one-line product blurb can be genuinely, correctly under 500
+    characters without being walled off at all (confirmed live — a real public tweet's
+    full text extracted cleanly at every rung, at ~150 characters, and used to be
+    silently discarded entirely because nothing this short could pass the length bar).
+    """
+    if attempt.markdown is None:
+        return True, False
+    lowered = attempt.html.lower()
+    blocked = False
+    if any(marker in lowered for marker in CHALLENGE_MARKERS):
+        blocked = True
+    if any(marker in lowered for marker in LOGIN_WALL_MARKERS) or "/login" in attempt.final_url.lower():
+        blocked = True
+    if require_capture and not attempt.captured:
+        blocked = True
+    if query and not _query_terms_present(attempt.markdown, query):
+        blocked = True
+    thin = len(attempt.markdown) < MIN_CONTENT_CHARS
+    return blocked, thin
+
+
 def validate(attempt: FetchAttempt, *, query: str | None = None, require_capture: bool = False) -> bool:
-    """The gate every rung's output passes through before it's accepted. Escalate
-    (return False) on: no extractable content, an anti-bot challenge marker, a
-    login-wall marker, thin content, a `--capture-xhr` session that captured nothing,
-    or (with `--query`) a page that mentions none of the query's words at all."""
+    """A clean pass: not blocked, and not even thin."""
+    blocked, thin = _classify(attempt, query=query, require_capture=require_capture)
+    return not blocked and not thin
+
+
+def is_soft_thin_pass(attempt: FetchAttempt, *, query: str | None = None, require_capture: bool = False) -> bool:
+    """True when the ONLY objection is thinness — nothing blocked it, there's just
+    not much text, and there's at least a little (MIN_SOFT_PASS_CHARS) so this isn't
+    a near-empty husk. The escalation ladder falls back to this when every rung is
+    exhausted, rather than discarding real (if brief) content outright."""
     if attempt.markdown is None:
         return False
+    blocked, thin = _classify(attempt, query=query, require_capture=require_capture)
+    return not blocked and thin and len(attempt.markdown) >= MIN_SOFT_PASS_CHARS
+
+
+def _why_failed(attempt: FetchAttempt, *, query: str | None = None, require_capture: bool = False) -> str:
+    if attempt.markdown is None:
+        return "no extractable content"
     lowered = attempt.html.lower()
     if any(marker in lowered for marker in CHALLENGE_MARKERS):
-        return False
-    if any(marker in lowered for marker in LOGIN_WALL_MARKERS):
-        return False
-    if "/login" in attempt.final_url.lower():
-        return False
-    if len(attempt.markdown) < MIN_CONTENT_CHARS:
-        return False
+        return "anti-bot challenge marker present"
+    if any(marker in lowered for marker in LOGIN_WALL_MARKERS) or "/login" in attempt.final_url.lower():
+        return "login-wall marker present (profile may have expired — see G-expiry)"
     if require_capture and not attempt.captured:
-        return False
+        return "--capture-xhr matched zero responses"
     if query and not _query_terms_present(attempt.markdown, query):
-        return False
-    return True
+        return f"none of the query terms ({query!r}) found in extracted text"
+    if len(attempt.markdown) < MIN_CONTENT_CHARS:
+        return f"thin content ({len(attempt.markdown)} chars, below even the {MIN_SOFT_PASS_CHARS}-char soft-pass floor)"
+    return "validation failed"
 
 
 def _attempt_from_response(response, rung: str, *, captured: list[dict] | None = None) -> FetchAttempt:
@@ -118,6 +147,25 @@ def _attempt_from_response(response, rung: str, *, captured: list[dict] | None =
     )
 
 
+def _soft_pass_or_raise(
+    attempts: list[FetchAttempt], *, query: str | None, require_capture: bool
+) -> FetchAttempt:
+    """Picks the attempt with the MOST extracted content among all rungs tried so
+    far, not just the last one — a more-escalated rung isn't guaranteed to extract
+    more text than an earlier one (confirmed live: a real page's stealth-rung
+    response came back with zero extractable content while its own fast/browser
+    attempts had already cleanly extracted ~150 characters of real text). Falling
+    back to strictly "the last attempt" would have discarded that real content in
+    favor of the worse, most-escalated one."""
+    candidates = [a for a in attempts if a.markdown is not None]
+    if candidates:
+        best = max(candidates, key=lambda a: len(a.markdown))
+        if is_soft_thin_pass(best, query=query, require_capture=require_capture):
+            best.soft_thin = True
+            return best
+    raise EscalationExhausted(attempts, query=query, require_capture=require_capture)
+
+
 def run_ladder(
     url: str,
     *,
@@ -129,7 +177,10 @@ def run_ladder(
     timeout: int = 30000,
 ) -> FetchAttempt:
     """Climbs fast -> browser -> stealth, stopping at the first rung whose output
-    passes `validate()`.
+    passes `validate()` — or, failing that, the first point where the ladder would
+    otherwise give up but the best attempt so far is a thin-content soft-pass (see
+    `is_soft_thin_pass`): real, unblocked content that's just short, returned with
+    `soft_thin=True` rather than discarded.
 
     `profile`/`capture_xhr`/`scroll` force the starting rung to `browser` and disable
     `fast` entirely, regardless of `mode` — the fast HTTP rung can't use a
@@ -172,7 +223,7 @@ def run_ladder(
         if validate(attempt, query=query):
             return attempt
         if mode == "fast":
-            raise EscalationExhausted(attempts, query=query)
+            return _soft_pass_or_raise(attempts, query=query, require_capture=require_capture)
 
     if try_browser:
         response = session_mod.browser_fetch(
@@ -184,7 +235,7 @@ def run_ladder(
         if validate(attempt, query=query, require_capture=require_capture):
             return attempt
         if mode == "browser" or forced_browser:
-            raise EscalationExhausted(attempts, query=query, require_capture=require_capture)
+            return _soft_pass_or_raise(attempts, query=query, require_capture=require_capture)
 
     if try_stealth:
         response = session_mod.browser_fetch(
@@ -195,4 +246,4 @@ def run_ladder(
         if validate(attempt, query=query):
             return attempt
 
-    raise EscalationExhausted(attempts, query=query, require_capture=require_capture)
+    return _soft_pass_or_raise(attempts, query=query, require_capture=require_capture)
