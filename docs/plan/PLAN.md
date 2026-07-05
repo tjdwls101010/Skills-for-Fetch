@@ -8,7 +8,7 @@
 >
 > **Distribution goal:** other people install this on their own Mac via `wf setup`, which must bootstrap its own prerequisites (§10, G-prereq) — do not assume the author's already-provisioned toolchain.
 >
-> **Facebook is a separate package.** The logged-in-Facebook capability is split into a standalone open-source tool, `scraper-for-facebook` (CLI `scrape-fb`), which the skill consumes like `gh`/`yt-dlp`. Its full spec — hardened against a 6-lens adversarial review — is in [SCRAPER-FOR-FACEBOOK-PLAN.md](SCRAPER-FOR-FACEBOOK-PLAN.md). The skill keeps the generic `--capture-xhr` mechanism (Tier-1, arbitrary SPAs); only FB-specific parsing lives in the package.
+> **Facebook is a separate package (same monorepo).** The logged-in-Facebook capability is split into a standalone open-source tool, `scraper-for-facebook` (CLI `scrape-fb`), which the skill consumes like `gh`/`yt-dlp`. It lives in **this same repo** at `package/scraper-for-facebook/` and publishes to PyPI from there (Trusted Publishing bound to the `Skills-for-Fetch` repo, package-scoped tag). Its full spec — hardened against a 6-lens adversarial review — is in [SCRAPER-FOR-FACEBOOK-PLAN.md](SCRAPER-FOR-FACEBOOK-PLAN.md). The skill keeps the generic `--capture-xhr` mechanism (Tier-1, arbitrary SPAs); only FB-specific parsing lives in the package.
 
 ---
 
