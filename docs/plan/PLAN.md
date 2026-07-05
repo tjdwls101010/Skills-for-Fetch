@@ -2,11 +2,13 @@
 
 > Build spec for the `web-fetch` skill. Produced in a dedicated planning session, reviewed by a 5-lens adversarial pass, and hardened against its findings. To be implemented in a fresh session. Everything here is either **decided with the user** or **empirically verified this session** (§2). Read the whole file, then re-read the skill-creator skill body (its writing craft is the source for §12).
 >
-> **Target OS: macOS (arm64) only for v1.** Linux/Windows are explicitly out of scope; do not half-build portability. Keep OS-specific paths in one place so a later port is a localized change (§10, G-os). Tier-2 login (`wf login`) assumes a GUI desktop — a headless-server install is not a supported scenario.
+> **Target OS: macOS (arm64) only for v1.** Linux/Windows are explicitly out of scope; do not half-build portability. Keep OS-specific paths in one place so a later port is a localized change (§10, G-os). Logged-in onboarding — Tier-1 `wf login` and Facebook's `scrape-fb login` — assumes a GUI desktop; a headless-server install is not a supported scenario.
 >
 > **This plan lives in `docs/plan/` (with `planning-evidence/`), NOT in the skill folder.** The implementer creates `.claude/skills/web-fetch/` fresh so the skill folder contains only the shipped skill. Paths like `planning-evidence/…` in this file are relative to this doc's folder.
 >
 > **Distribution goal:** other people install this on their own Mac via `wf setup`, which must bootstrap its own prerequisites (§10, G-prereq) — do not assume the author's already-provisioned toolchain.
+>
+> **Facebook is a separate package.** The logged-in-Facebook capability is split into a standalone open-source tool, `scraper-for-facebook` (CLI `scrape-fb`), which the skill consumes like `gh`/`yt-dlp`. Its full spec — hardened against a 6-lens adversarial review — is in [SCRAPER-FOR-FACEBOOK-PLAN.md](SCRAPER-FOR-FACEBOOK-PLAN.md). The skill keeps the generic `--capture-xhr` mechanism (Tier-1, arbitrary SPAs); only FB-specific parsing lives in the package.
 
 ---
 
@@ -17,7 +19,7 @@ Built-in `WebFetch` has three fatal limits: (a) many sites block it, (b) it can'
 **In scope (v1):**
 - `fetch` — one URL → clean markdown file, with anti-bot escalation.
 - `crawl` — seed URL → many pages → markdown files (deep crawl).
-- **Logged-in scraping** — reuse the user's authenticated browser session for content behind a login wall. Two tiers (§8): cookie-auth sites (Reddit-class) and **Facebook** (Meta token-fortified SPA — capture mechanism proven this session, §2). **Threads: mechanism-ready but query-mapping deferred** (§16).
+- **Logged-in scraping** — reuse the user's authenticated browser session for content behind a login wall. Two tiers (§8): **Tier-1** cookie-auth sites (Reddit-class), handled in-skill; and **Facebook**, delegated to the external `scrape-fb` tool (capture mechanism proven this session, §2; parsing/versioning owned by the `scraper-for-facebook` package). **Threads: deferred to the package's roadmap** (§16).
 - **Site routes** — GitHub → `gh`, YouTube → `yt-dlp` (documented commands, not wrapped; §9). Extensible later.
 
 **Out of scope (v1):** web *search* (built-in `WebSearch` stays); Threads exact query discovery; Linux/Windows.
@@ -36,7 +38,7 @@ Verified library versions by actually installing: `scrapling` **0.4.9** (`[fetch
 - `DynamicSession(user_data_dir=<logged-in profile>, headless=True, capture_xhr=r"graphql")` reused persisted FB cookies → **no login wall**, and captured **10–23 timeline GraphQL response bodies** as JSON, from which we extracted **real post fields** (author, body text, permalink — see `planning-evidence/fb-field-paths.txt`). scrapling alone, no agent-browser at runtime.
 - Recon mapped the endpoint (`POST /api/graphql`, **no trailing slash**), the timeline query `ProfileCometTimelineFeedRefetchQuery` and pagination `ProfileCometTilesFeedPaginationQuery` (cursor-based). Tokens (`fb_dtsg`, `doc_id`, `lsd`) are all browser-generated — which is why *observing* via `capture_xhr` sidesteps token-replay maintenance.
 
-**NOT proven** (build-session work, do not overtrust): a durable multi-post *extractor* (paths rotate), pagination completeness, dedup, session durability over time/expiry, headless-fingerprint durability, and Threads (zero evidence yet).
+**NOT proven** (build-session work, do not overtrust): a durable multi-post *extractor* (paths rotate), pagination completeness, dedup, session durability over time/expiry, headless-fingerprint durability, and Threads (zero evidence yet). These unproven pieces are now the responsibility of the **`scraper-for-facebook`** package — built and tested there, not in the skill (see [SCRAPER-FOR-FACEBOOK-PLAN.md](SCRAPER-FOR-FACEBOOK-PLAN.md)).
 
 `agent-browser` was used ONLY for recon and will be deleted; the shipped skill must not depend on it. (If Threads discovery is wanted, retain agent-browser until that recon is done in the build session — §16.)
 
@@ -75,8 +77,7 @@ The implementer BUILDS this (skill folder holds only the shipped skill):
 │   └── engine/
 │       ├── escalate.py         # escalation ladder + content validation (thresholds/markers)
 │       ├── markdown.py         # trafilatura HTML→md + rank_bm25 query filter
-│       ├── session.py          # profile/user_data_dir, capture_xhr, scroll, locking, cleanup
-│       ├── fbparse.py          # recursive FB story-node extractor (see §8)
+│       ├── session.py          # profile/user_data_dir, capture_xhr, scroll, locking, cleanup (Tier-1 + generic capture; FB parsing lives in the scrape-fb package)
 │       ├── save.py             # slug + output path + preview/metadata/manifest
 │       └── routes.py           # URL→route DETECTION only (returns command; never executes)
 └── references/
@@ -193,12 +194,13 @@ Default root = **project cwd** so Claude can immediately Read/Grep:
 
 ## 8. Logged-in scraping (the differentiator)
 
-Two tiers. **Both use a dedicated web-fetch profile logged in once, reused headlessly** (decided; the daily Chrome profile is NOT reused — G-keychain).
+Two tiers, each with a **dedicated profile logged in once and reused headlessly** (the daily Chrome profile is NOT reused — G-keychain): **Tier-1** uses an in-skill `wf login` profile; **Tier-2 (Facebook)** uses the external `scrape-fb` tool's own profile via `scrape-fb login`. The onboarding principle below is shared; the commands differ.
 
 ### ⚠️ Account-safety warning (must be prominent in SKILL.md + logged-in.md)
 Automating a logged-in **Meta** (Facebook/Threads) account is **against Meta's Terms of Service** and can get the account **flagged, checkpointed, or permanently banned** — losing photos, messages, linked logins. This is a real, irreversible harm, not a nicety. Therefore Tier-2 is an **informed opt-in**, not a routine feature: recommend a **secondary/throwaway account**, keep volume low, use jittered human-like delays, cap scrolls, and **never run it unattended in a loop**. State this plainly before the user first uses it.
 
-### Onboarding: `wf login <site>`
+### Onboarding (Tier-1): `wf login <site>`
+(Facebook onboarding is `scrape-fb login` — see Tier-2 below. This flow is for Tier-1 cookie-auth sites like Reddit.)
 1. Launch a **headed** `DynamicSession(user_data_dir=~/.web-fetch/profiles/<site>, headless=False)` at the login page.
 2. User logs in by hand (2FA/captcha).
 3. Cookies/localStorage persist on disk. Close the browser fully (headed session must be closed before any headless fetch — profile-dir lock, below).
@@ -207,30 +209,22 @@ Automating a logged-in **Meta** (Facebook/Threads) account is **against Meta's T
 ### Tier-1 — cookie-auth sites (Reddit, most forums/news)
 Use `--profile <site>` (the dedicated logged-in profile) — natively supported via `user_data_dir` (scrapling `cookies=` also accepts an explicit dict if needed). **`--cookies-from-browser` is dropped from v1**: scrapling has no browser-cookie extraction, and macOS Chrome cookies are Keychain-encrypted (G-keychain) so a `browser_cookie3` path would likely fail anyway. `wf login` is the reliable Tier-1 path. (Revisit `browser_cookie3` for non-Chrome/other-OS later.)
 
-### Tier-2 — token-fortified SPAs (Facebook; Threads deferred)
-Do **not** extract/replay tokens. Let the live logged-in browser make the calls and capture the responses:
+### Tier-2 — Facebook (delegated to the external `scrape-fb` tool)
+Facebook's Meta-token-fortified timeline is **not parsed in-skill**. It is handled by the standalone `scraper-for-facebook` package (CLI `scrape-fb`), which the skill drives like `gh`/`yt-dlp` — a maintained, versioned, independently-tested tool that owns FB response-shape drift so the skill stays thin. Full spec: [SCRAPER-FOR-FACEBOOK-PLAN.md](SCRAPER-FOR-FACEBOOK-PLAN.md). (The generic `--capture-xhr` mechanism above stays in the skill for *arbitrary* SPAs; only FB-specific parsing moved out. The proven capture principle — observe `capture_xhr=r"graphql"`, don't replay tokens — is what that package is built on.)
+
+**Onboarding:** `scrape-fb login` (headed, once) creates the tool's own persisted profile, separate from `wf login` Tier-1 profiles. `scrape-fb setup` provisions its browser into an **isolated** cache (its own `PLAYWRIGHT_BROWSERS_PATH`) so it never clashes with the skill's fetch-venv browser build.
+
+**Fetch handoff** (the skill shells out and consumes JSON):
 ```
-wf fetch "https://www.facebook.com/<profile>" --profile facebook \
-    --scroll 6 --capture-xhr "graphql" --format json
+scrape-fb fetch "https://www.facebook.com/<profile>" --profile <name> \
+    --limit 30 [--since YYYY-MM-DD] --format json --output ./.tmp/web-fetch/facebook/<slug>.json
 ```
-`--capture-xhr "graphql"` — **ship the pattern that was proven** (`r"graphql"`, or `r"/api/graphql"` WITHOUT trailing slash; the real URL has none). Internally: `DynamicSession(user_data_dir=<facebook profile>, capture_xhr=r"graphql")`, `page_action` scrolls to trigger cursor pagination, `response.captured_xhr` yields timeline JSON.
+The skill reads the JSON, renders a markdown preview, and saves the full result under `./.tmp/web-fetch/` (gitignored, §4). It passes an explicit gitignored `--output`; standalone `scrape-fb` defaults output to a non-repo path so a direct run can't drop third-party PII into a tracked dir. Honor exit codes: `2` → tell the user to run `scrape-fb login`; `3` → checkpoint; `5` → profile unavailable (memorialized/blocked); `7` → `--since` window not fully reached (partial, not a failure).
 
-**Parsing (the single hardest task — spec it, don't hand-wave):** `engine/fbparse.py`, guided by `planning-evidence/fb-field-paths.txt`:
-- Bodies are **NDJSON**: split on newlines, `json.loads` each line, merge. Content also arrives in later **`@defer` chunks** — parse ALL lines, not just the first.
-- **Recursively find story nodes** (objects carrying `comet_sections.content.story` or a `message…text`) rather than hard-coding absolute paths — nesting depth varies (`attached_story` for shares). Real fields (verified this session): body `…content.story.comet_sections.message.story.message.text`, author `…content.story.actors[].name/url/id`, permalink `…content.story.wwwURL`, id `data.node.feedback.id`. `creation_time` is an int on the story — locate it on a live sample in the build session.
-- **Dedup** by feedback/story id (scrolling re-emits the same posts); **track the pagination cursor** to detect end-of-feed; **cap total scrolls**.
-- **Fallback:** if 0 story nodes parse, write the raw JSON + a warning ("N bodies captured, 0 posts parsed — the FB response shape likely changed; inspect a body") — never silently emit an empty result.
-
-**Failure modes (all must be handled, not crash/empty-file):**
-- **session expired / login wall** after render (redirect `/login`, login markers, or 0 graphql after N scrolls) → exit non-zero with `run: wf login facebook`; do not escalate to stealth, do not write an empty file.
-- **checkpoint/2FA re-challenge** (Meta may flag headless reuse — durability is NOT proven beyond one run; consider defaulting Meta to headed) → detect and fail loud.
-- **zero XHR matched** → non-zero exit `"no XHR matched <regex> — check pattern/session"`.
-- **timeout mid-scroll** → save whatever was captured (partial) + warning, don't discard.
-
-**Honest permission + third-party privacy framing (logged-in.md):** you get exactly what your logged-in identity can see — this saves "what you'd see in your browser", it does not defeat privacy. But captured bodies contain **other people's** posts, names, media URLs → outputs go to `./.tmp/web-fetch/` (gitignored, §4); do not share/commit them; personal scale only. `--capture-xhr` is generic — captured bodies may include auth tokens; never print them to context or commit; redact obvious `Authorization`/token fields from saved output.
+**Honest permission + third-party privacy framing (logged-in.md):** you get exactly what your logged-in identity can see — this saves "what you'd see in your browser", it does not defeat privacy. Captured posts contain **other people's** names, text, media URLs → outputs are gitignored (§4), personal scale only, never shared/committed. The `scrape-fb` package scrubs tokens/PII from its own diagnostics and never emits raw captured bodies; the skill likewise never prints raw captured bodies to context.
 
 ### Concurrency / cleanup
-- **Profile lock:** acquire an OS file lock (`~/.web-fetch/locks/<site>.lock`) before launching a `--profile` browser; if held, fail with "profile <site> in use (another wf command or wf login running)". Chromium locks a profile dir; two concurrent `--profile facebook` calls otherwise crash with an opaque ProcessSingleton error.
+- **Profile lock:** acquire an OS file lock (`~/.web-fetch/locks/<site>.lock`) before launching a `--profile` browser; if held, fail with "profile <site> in use (another wf command or wf login running)". Chromium locks a profile dir; two concurrent `--profile reddit` calls otherwise crash with an opaque ProcessSingleton error. (Facebook's own profile locking is handled inside `scrape-fb`.)
 - **Browser cleanup:** wrap every session in a context manager / try-finally that guarantees `close()` on exception and SIGINT; leaked headless browsers hold the profile lock and break the next run. `wf doctor` reports (and can kill) orphaned web-fetch browser processes.
 
 ---
@@ -240,6 +234,7 @@ wf fetch "https://www.facebook.com/<profile>" --profile facebook \
 Per Agent-Reach's lesson, don't wrap mature CLIs. `engine/routes.py` performs URL **classification only**: it returns the recommended command / a pointer to `references/routes.md`. **It must NOT execute or shell out to `gh`/`yt-dlp`** — Claude runs those directly. That resolves the "code exists but nothing is wrapped" seam.
 - **GitHub** (`github.com`) → `gh` (installed & authed; generous limits): `gh api repos/{o}/{r}`, `gh issue view`, `gh pr diff`.
 - **YouTube** (`youtube.com`, `youtu.be`) → `yt-dlp --dump-json`, `--write-sub --write-auto-sub --skip-download`.
+- **Facebook** (logged-in) → external `scrape-fb` tool. Like `gh`/`yt-dlp` it's a documented external command, but unlike them it needs a one-time `scrape-fb login` and reaches a private feed — so it's covered in §8 Tier-2 / references/logged-in.md, not the anonymous route table.
 - Future low-effort routes (no keys): Reddit `.json`/`.rss`, HN Firebase, Wikipedia/arXiv APIs. Keep the no-hardcoded-site-name discipline for the *generic* engine; routes are the sanctioned exception, isolated in `routes.py`.
 
 ---
@@ -252,10 +247,11 @@ Idempotent; each step reports ok/skip/fail. **Assume nothing is pre-installed** 
    - **uv** (the bootstrap for everything else): detect by executing `uv --version`. If missing, auto-install — prefer `brew install uv` when Homebrew exists, else the official `curl -LsSf https://astral.sh/uv/install.sh | sh` — after telling the user what's about to run. If neither path works, print the exact manual command and stop with a clear message.
    - **python 3.12**: do NOT require a system python. `uv` provides it — `uv python install 3.12` (or `uv venv --python 3.12` auto-fetches). This removes "wrong/absent system Python" as a failure class entirely.
    - **gh, yt-dlp** (optional — only for routes; non-fatal): detect by *executing* (G-yt). If missing/broken, auto-install (`brew install gh`, `uv tool install yt-dlp`); if Homebrew is absent, print the manual command and continue (routes degrade gracefully, core fetch/crawl still work).
+   - **scrape-fb** (the `scraper-for-facebook` tool — optional, only for Facebook Tier-2; **opt-in** because installing it pulls its own isolated browser, hundreds of MB): install on first Facebook use, or via `wf setup --facebook`, with `uv tool install scraper-for-facebook` then `scrape-fb setup`. Health-check by executing `scrape-fb doctor` (launches the browser + round-trips a capture — **not** `scrape-fb --version`, which imports the entry point but attests nothing about the browser). Its browser cache is isolated, so it never clashes with the two skill venvs (G-sharedcache).
 1. `uv venv --python 3.12` → `~/.web-fetch/venvs/{fetch,crawl}`.
 2. fetch venv: `uv pip install "scrapling[fetchers]>=0.4.9" trafilatura rank_bm25` (**pin `>=0.4.9`** — the validated version; a looser floor risks the 0.2.99 backtrack, G-extras/G-lxml). Then `scrapling install` (provisions browsers into the shared cache for THIS venv's client version).
 3. crawl venv: `uv pip install crawl4ai` then `crawl4ai-setup`.
-4. Health-check by **executing** (not `which`): `gh --version`, `yt-dlp --version` → classify missing/**broken**/ok (G-yt); if yt-dlp broken, reinstall via `uv tool install yt-dlp`.
+4. Health-check by **executing** (not `which`): `gh --version`, `yt-dlp --version` → classify missing/**broken**/ok (G-yt); if yt-dlp broken, reinstall via `uv tool install yt-dlp`. If Facebook support is installed, also run `scrape-fb doctor` (real capture round-trip, not `--version`).
 5. Import smoke test per venv: fetch venv asserts `DynamicSession`, `capture_xhr` usable and `capture_xhr=r"graphql"` returns >0 on a known SPA; crawl venv asserts `AsyncWebCrawler` + `deep_crawling`.
 6. Write `config.json` (§5 schema) incl. resolved browser-cache path & versions.
 7. Ensure `./.tmp/web-fetch/` is in the project `.gitignore`.
@@ -282,7 +278,7 @@ The split rule: **a file earns its own existence only if it has a distinct load 
 - Gotchas that fire on every fetch: G-200 + escalation-validation.
 
 **references/ — each has ONE clear, unrelated load trigger** (so most runs load none of them):
-- `logged-in.md` — **trigger: the task involves login/auth/a private feed.** Holds Tier-1/2, `wf login`, capture_xhr, FB parsing + field map, account-ban warning, honest/third-party-privacy framing, failure modes, and the FB gotchas (G-cdp, G-profile-engine, G-keychain, G-fbidle, G-capture-body, G-fbban, G-fbheadless, G-fbexpiry). Most fetches are not logged-in → they never pay for this.
+- `logged-in.md` — **trigger: the task involves login/auth/a private feed.** Holds Tier-1 (`wf login`, `--profile`, generic `--capture-xhr`), the **Tier-2 Facebook handoff to `scrape-fb`** (install/login/setup/doctor/fetch + exit-code handling — the parsing itself lives in the package, not here), the account-ban warning, honest/third-party-privacy framing, and the skill-side gotchas (G-cdp, G-profile-engine, G-keychain, G-capture-body). The FB-account gotchas (G-fbidle/G-fbban/G-fbheadless/G-fbexpiry) are owned by the `scrape-fb` package (SCRAPER §17); logged-in.md just points to it. Most fetches are not logged-in → they never pay for this.
 - `routes.md` — **trigger: the URL is GitHub/YouTube (or a future routed site).** Holds the full gh/yt-dlp/JSON-API recipes. Most fetches are neither site → skipped. (This is why the route *table* is here, not the body: carrying gh/yt-dlp recipes on every run — most of which never touch either site — dilutes the every-run lines, the exact skill-creator mis-read to avoid.)
 - `engines.md` — **trigger: setup failed, or you're debugging/extending the engine.** Holds scrapling/crawl4ai/trafilatura params, escalation internals, where the validation constants live, how to add a rung, and the setup/env gotchas (G-lxml, G-extras, G-sharedcache, G-os, G-prereq). Steady-state runs never open it.
 
@@ -319,10 +315,10 @@ Default: **ignore robots.txt** (the point is reaching soft-blocked sites) but **
 - **G-yt:** `yt-dlp` here is installed-but-broken. Health-check by *executing*; classify missing/broken/ok; self-heal broken.
 - **G-sharedcache:** browser binaries live in shared caches, reused across venvs, but client versions must match the cached build — run each engine's install step.
 - **G-fbidle:** Facebook never network-idles (constant polling) — don't gate capture on `network_idle`; use explicit waits + `--scroll`.
-- **G-capture-body:** `capture_xhr` returns full `Response` objects *with* `.body` (unlike agent-browser's HAR, which omitted bodies). Bodies are NDJSON — split lines, parse each, and expect `@defer` chunks.
-- **G-fbban:** automating a logged-in Meta account violates ToS and risks a ban (§8). Secondary account, low volume, jitter, no unattended loops.
-- **G-fbheadless:** headless reuse of a Meta profile can trip checkpoints; durability is unproven beyond one run — detect checkpoint markers, consider headed default.
-- **G-fbexpiry:** cookies expire; a headless fetch then silently hits the login wall. Detect and fail loud with `run wf login <site>`.
+- **G-capture-body:** `capture_xhr` results are read via **`page.captured_xhr`** (off the object `fetch()` returns — NOT `response.captured_xhr`). Each is a full `Response` whose `.body` is **raw bytes** — `decode("utf-8","replace")` before any string work (`bytes.split("\n")` with a str separator raises `TypeError`). Bodies are NDJSON — split lines, parse each, expect `@defer` chunks. (FB-specific parsing of these lives in the `scrape-fb` package.)
+- **G-fbban:** automating a logged-in Meta account violates ToS and risks a ban (§8). Secondary account, low volume, jitter, no unattended loops. (Handled in the `scrape-fb` package — SCRAPER §2/§9/§17 — including a non-bypassable scroll-delay floor; the skill just surfaces the warning.)
+- **G-fbheadless:** headless reuse of a Meta profile can trip checkpoints; durability is unproven beyond one run — detect checkpoint markers, consider headed default. (Owned by `scrape-fb` — SCRAPER §7/§9/§17.)
+- **G-fbexpiry:** cookies expire; a headless fetch then silently hits the login wall. For Facebook, `scrape-fb` detects this and exits `2` → the skill tells the user to run `scrape-fb login`. (For Tier-1 sites, `wf login <site>`.)
 - **G-os:** v1 is macOS-only; keep the hardcoded cache paths (`~/Library/Caches/…`) and the bash launcher in one place so a later port is localized.
 - **G-prereq (distribution):** the author's Mac has `uv`/`gh`/`yt-dlp`; a new user's won't. `wf setup` must detect each by *executing* it and bootstrap the missing ones (§10 step 0) — `uv` is the one true prerequisite (it then supplies python 3.12), `gh`/`yt-dlp` are optional route helpers. Never assume the author's toolchain; a first-run that fails on a missing `uv` is a dead-on-arrival install.
 
@@ -336,7 +332,7 @@ Objectively checkable → write assertions. Baseline = built-in WebFetch. Cases:
 - Cloudflare page → stealth rung succeeds.
 - `--query` on a long page → filtered companion is relevant & smaller.
 - `crawl` a small docs site → N pages saved + `manifest.json` present (assert both).
-- Tier-2: `wf fetch <own FB profile> --profile facebook --scroll 4 --capture-xhr graphql` → assert >0 graphql bodies captured AND ≥1 post parsed (the smoke assertion that guards against the "0 captured / 0 parsed" regressions). Requires the logged-in profile; the user runs this one.
+- Tier-2 (Facebook): `scrape-fb doctor` passes, then `scrape-fb fetch <own FB profile> --profile <name> --limit 5 --format json` → assert ≥1 post in the JSON and that the skill renders + saves it. Requires the logged-in `scrape-fb` profile; the user runs this one. (The parser's own regression suite — bytes-decode, @defer merge, shared-post disambiguation, truncation, etc. — lives in the `scrape-fb` package, SCRAPER §13, not the skill.)
 
 Measure tokens/time vs baseline; the win is "content at all" on blocked sites + file-saving.
 
@@ -348,14 +344,14 @@ Measure tokens/time vs baseline; the win is "content at all" on blocked sites + 
 3. `fetch.py` fast rung → validation gate → browser/stealth escalation.
 4. `engine/routes.py` (detection) + references/routes.md (github/youtube).
 5. `crawl.py` on crawl4ai + crawl output contract.
-6. Tier-1 (`--profile`, `wf login`) → Tier-2 (`--capture-xhr`, `engine/fbparse.py`, dedup/cursor/failure-handling) + references/logged-in.md.
+6. Tier-1 (`--profile`, `wf login`, generic `--capture-xhr`) → Tier-2 Facebook = integrate the external `scrape-fb` tool (install via `uv tool`, `scrape-fb login`/`setup`/`doctor`, the `scrape-fb fetch` JSON handoff + exit-code handling) + references/logged-in.md. No in-skill FB parser — that's the `scraper-for-facebook` package, built separately per SCRAPER-FOR-FACEBOOK-PLAN.md.
 7. SKILL.md last (once behavior is real) + skill-creator eval loop.
 
 ---
 
 ## 16. Open questions / future
-- **Threads** exact GraphQL query names — repeat the recon (agent-browser HAR while logged in) in the build session; mechanism is identical to FB. Retain agent-browser until then, or defer Threads entirely.
-- FB `creation_time` int path + media/attachment enumeration — derive from a live sample when building `fbparse.py`.
+- **Threads / Instagram** — deferred to the `scrape-fb` package's roadmap (same capture core, separate parsers — SCRAPER §19). The skill carries no Meta capture code of its own; adding them is a `scrape-fb` release, not skill work. (Threads recon — agent-browser HAR while logged in — happens in the package's dev, not here.)
+- FB `creation_time` path, truncation marker, and media/link enumeration — resolved by the `scrape-fb` package's blocking live probes (SCRAPER §13), not in the skill.
 - Reddit/HN/Wikipedia JSON routes in v1 vs later.
 - Consistency of markdown quality between trafilatura (fetch) and crawl4ai (crawl).
 - `browser_cookie3` Tier-1 path for non-Chrome/other-OS (dropped from v1).
