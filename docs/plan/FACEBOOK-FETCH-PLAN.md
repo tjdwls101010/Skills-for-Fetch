@@ -160,3 +160,28 @@ The parser's own regression suite lives in the `scraper-for-facebook` package (S
 - Whether to proactively run `scrape-fb doctor`+`status` before every fetch (safer, ~2 browser launches) vs try-fetch-and-branch-on-exit-code (cheaper, one launch) — lean try-first; revisit after the eval loop.
 - Threads/Instagram: deferred to the `scraper-for-facebook` package roadmap (SCRAPER §19). If the CLI later grows those, this skill extends; no skill-side capture code either way.
 - Multi-profile UX (the CLI supports `--profile <name>`): how the skill should name/track more than one logged-in FB identity, if the user has several. Likely a reference note, not v1 body.
+
+---
+
+## 11. Planned revision — delegate the mechanical surface to `scrape-fb` ≥ 0.2.0 (next session, after the CLI ships it)
+
+The v1 skill (shipped 2026-07-07) hand-copies the full flag table and the `Post`/`Media`/`LinkAttachment` field enumeration into `references/scrape-fb.md`. That mechanical layer drifts whenever the CLI changes and forces a skill edit for every such change — the maintenance/synchronization worry that motivated this revision. Once `scrape-fb` v0.2.0 ships CLI self-description (SCRAPER-FOR-FACEBOOK-PLAN §10a: enriched `--help` + a `schema` subcommand), the skill delegates that layer to the installed binary — version-matched and drift-free — and keeps only what the CLI can't emit. **Do this only after v0.2.0 is on PyPI; until then the shipped hand-written tables are correct and stay in place.** This is a deliberately narrow win: it removes drift on the *cheapest* layer (mechanical flags + field names), not on the layer that carries the skill's actual value (exit-code meaning, traps, safety) — that stays hand-maintained no matter what, because the CLI cannot express it.
+
+What the reference **drops** (delegated to the CLI):
+- The mechanical flag rows → an instruction to run `scrape-fb fetch --help` for the authoritative, version-matched flag list, defaults, and CLI-intrinsic semantics (the 0.5s floor, the `--max-scrolls` ceiling, the `--since` best-effort caveat now live in the help text itself).
+- The `Post`/`Media`/`LinkAttachment` field enumeration → an instruction to run `scrape-fb schema` (offline, exit 0) for the authoritative field list.
+
+What the reference **keeps** (the CLI cannot emit these — they are the skill's actual value):
+- The exit-code *meanings* and the compact table (exit 5 = answer not error, exit 7 = not-a-failure, argparse usage errors = exit 1 not 2) — §6, unchanged.
+- The cross-command traps (doctor ≠ logged-in, metadata-on-stderr-not-the-file, `--max-scrolls` silently caps a `--limit`-only run at exit 0, `SingletonLock` on concurrent same-profile use) — unchanged.
+- The account-safety / ban framing and the GDPR/data-controller note — unchanged.
+- Skill-*context* flag advice that would be wrong to put in the CLI's own `--help`: "always pass `--output ./.tmp/facebook-fetch/…` explicitly" (the CLI's platform-dir default is deliberately right for a standalone user, wrong for the skill's read-it-back-then-gitignore flow) and "never `--no-redact`".
+- Field *usage* semantics `schema` can't carry: dedup on `id` never `captured_at`; `media`/`links` URLs are signed/expiring/sensitive; `shared_post` can nest deeper than one level; pinned / null-`created_at` posts bypass `--since`/`--until`.
+
+New dependency this introduces (handle it, don't ignore it): the skill now requires `scrape-fb` ≥ 0.2.0 (it calls `schema`, absent before). State the minimum version in the skill, and make the readiness path treat an unknown `schema` subcommand (argparse exit 1) or a `--version` below 0.2.0 as "upgrade: `uv tool install --upgrade scraper-for-facebook`", distinct from an exit-2 login problem. This is a genuinely new failure mode the delegation buys — the honest tradeoff for dropping drift on the mechanical layer.
+
+Expected size effect: the reference loses the 13-row flag table and the one-paragraph field enumeration (~25–30% of the file) while keeping every load-bearing line. Modest, but drift drops to near-zero *on the skill's copy* of exactly the parts that were most tedious to keep in sync. Be precise about that scope: this removes drift for the skill only — the `scrape-fb` package still hand-maintains the same flag/field surface in its own `README.md` and `wiki/` pages, a separate copy-count the package plan owns (SCRAPER-FOR-FACEBOOK-PLAN §10a's "scope the drift claim honestly" note), not something this skill revision fixes.
+
+While revising, also tighten one already-shipped line the plan review flagged: SKILL.md's `--max-scrolls` trap currently says it "overrides `--limit` and `--since` regardless", which overstates it — `scroll.py` checks `--limit`/`--since` each iteration, so on a shallow feed those stop the run first and the ceiling is never reached; the accurate framing is "a ceiling that can cut a run short before `--limit`/`--since` is met." (The following sentence in the shipped bullet — "a `--limit 200` request can come back with far fewer posts" — is already correct; only the "overrides regardless" clause needs softening.)
+
+**Re-run the E2E skill-loading test after the change** — a delegating reference that sends the model to `--help`/`schema` must still let a cold-loaded model construct a correct fetch without reading CLI source; if it can't, the delegation went too far and some mechanical detail belongs back in the skill.
