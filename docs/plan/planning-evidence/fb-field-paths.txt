@@ -1,0 +1,34 @@
+# Facebook profile-timeline GraphQL — real post-field path map
+# Captured LIVE this planning session via scrapling capture_xhr (poc_extract_paths.py).
+# Path templates only; all personal VALUES were redacted (paths carry no PII).
+# [] = list index. Each captured body is one story hydrated under `data.node`.
+#
+# IMPORTANT: doc_ids and exact query names ROTATE (Meta changes them without notice).
+# Treat this as a STARTING MAP. The robust extractor RECURSIVELY finds story nodes
+# (any object carrying `comet_sections.content.story` or a `message.text`) rather
+# than hard-coding these absolute paths — nesting depth varies (see attached_story).
+#
+# --- core fields of a top-level post (story = data.node.comet_sections.content.story) ---
+#   post id (feedback):   data.node.feedback.id
+#   author name:          data.node.comet_sections.content.story.actors[].name
+#   author profile url:   data.node.comet_sections.content.story.actors[].url
+#   author id:            data.node.comet_sections.content.story.actors[].id
+#   author avatar:        data.node.comet_sections.content.story.actors[].profile_picture.uri
+#   post body text:       data.node.comet_sections.content.story.comet_sections.message.story.message.text
+#                         (also appears at ...story.message.text — check both)
+#   permalink:            data.node.comet_sections.content.story.wwwURL
+#   creation_time:        an INT field on the story (my str-only probe missed it;
+#                         find `creation_time` under the story/metadata in the build session)
+#
+# --- shared/quoted post (when a post shares another) lives under attached_story ---
+#   shared body text:     data.node.attached_story...comet_sections.message.story.message.text
+#   shared author:        data.node.attached_story.comet_sections.context_layout.story.actors[].name
+#   shared story id:      data.node.attached_story.id
+#
+# --- media/attachments ---
+#   image/media uris appear as `...attachment(s)...media...image.uri` / `...uri`
+#   (enumerate on a live sample; not all posts have attachments)
+#
+# NOTE: bodies are NEWLINE-DELIMITED concatenations of JSON objects (NDJSON-ish);
+# split on newlines and json.loads each line. Some content arrives in later
+# @defer chunks, not the first object — parse ALL lines, then dedup by feedback/story id.

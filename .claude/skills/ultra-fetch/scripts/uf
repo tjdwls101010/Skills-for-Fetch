@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# ultra-fetch launcher. Not assumed to be on PATH — invoke by skill-relative path,
+# e.g. "$SKILL/scripts/uf" fetch <url>. Resolves venv pythons from
+# $ULTRA_FETCH_HOME/config.json (written by `uf setup`) and execs into them, so `uf`
+# itself never needs the heavy libraries installed — only a bootstrap python3.
+set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Must match setup.py/engine/session.py's own ULTRA_FETCH_HOME default exactly — a
+# fresh-install test once ran `ULTRA_FETCH_HOME=/tmp/x uf setup` successfully, then
+# `uf fetch` silently used the real ~/.ultra-fetch instead, because this launcher had
+# hardcoded the path while setup.py/session.py already respected the env var.
+ULTRA_FETCH_HOME="${ULTRA_FETCH_HOME:-$HOME/.ultra-fetch}"
+CONFIG="$ULTRA_FETCH_HOME/config.json"
+SCHEMA_VERSION=1
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: uf <command> [args...]
+
+  uf setup                 create venvs, install libs+browsers, health-check
+  uf doctor [--kill]       re-run health checks + orphaned-browser + profile-age report
+                           (--kill terminates any orphaned browser processes found)
+  uf fetch <url> [opts]    fetch one URL -> markdown file       (uf fetch --help)
+  uf crawl <url> [opts]    crawl a site -> markdown files + manifest.json (uf crawl --help)
+  uf login <site> [--url]  headed login -> dedicated Tier-1 profile for --profile reuse
+EOF
+}
+
+require_config() {
+  if [[ ! -f "$CONFIG" ]]; then
+    echo "uf: not set up yet. Run: \"$SKILL_DIR/scripts/uf\" setup" >&2
+    exit 1
+  fi
+  local version
+  version="$(python3 -c "import json; print(json.load(open('$CONFIG')).get('schema_version', 0))" 2>/dev/null || echo 0)"
+  if [[ "$version" != "$SCHEMA_VERSION" ]]; then
+    echo "uf: config.json is stale (schema $version, need $SCHEMA_VERSION). Re-run: \"$SKILL_DIR/scripts/uf\" setup" >&2
+    exit 1
+  fi
+}
+
+config_get() {
+  python3 -c "import json; print(json.load(open('$CONFIG')).get('$1', ''))"
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+cmd="$1"
+shift
+
+case "$cmd" in
+  setup)
+    exec python3 "$SKILL_DIR/scripts/setup.py" "$@"
+    ;;
+  doctor)
+    exec python3 "$SKILL_DIR/scripts/setup.py" --doctor "$@"
+    ;;
+  fetch)
+    require_config
+    py="$(config_get fetch_venv_python)"
+    exec "$py" "$SKILL_DIR/scripts/fetch.py" "$@"
+    ;;
+  crawl)
+    require_config
+    py="$(config_get crawl_venv_python)"
+    exec "$py" "$SKILL_DIR/scripts/crawl.py" "$@"
+    ;;
+  login)
+    require_config
+    py="$(config_get fetch_venv_python)"
+    exec "$py" "$SKILL_DIR/scripts/login.py" "$@"
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "uf: unknown command '$cmd'" >&2
+    usage
+    exit 1
+    ;;
+esac

@@ -11,3 +11,10 @@ __pycache__/
 
 .claude/skills/agent-browser/
 .claude/skills/skill-creator/
+
+# scraper-for-facebook is its OWN separate repo, checked out at this path but
+# not tracked by Skills-for-Fetch (it publishes to PyPI from its own repo).
+package/scraper-for-facebook/
+
+# scraper-for-X is likewise its OWN separate repo (Scraper-for-X.git).
+package/scraper-for-X/
